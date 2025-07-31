@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools-scm", "torch"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torch_int"
+dynamic = ["version"]
+description = "PyTorch INT8 quantization with CUTLASS"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "accelerate",
+    "icecream",
+]
+
+[tool.setuptools_scm]
