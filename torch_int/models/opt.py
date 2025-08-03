@@ -100,7 +100,9 @@ class Int8OPTAttention(nn.Module):
         # get query proj
         query_states = self.q_proj(hidden_states)
         # get key, value proj
-        if is_cross_attention and past_key_value is not None:
+        # New HF caches may pass a DynamicCache or similar object rather than a plain tuple.
+        # For compatibility, only try to concatenate when we have a tuple of tensors.
+        if is_cross_attention and isinstance(past_key_value, tuple):
             # reuse k,v, cross_attentions
             key_states = past_key_value[0]
             value_states = past_key_value[1]
@@ -108,14 +110,14 @@ class Int8OPTAttention(nn.Module):
             # cross_attentions
             key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
             value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
-        elif past_key_value is not None:
-            # reuse k, v, self_attention
+        elif isinstance(past_key_value, tuple):
+            # reuse k, v, self_attention with compatible tuple cache
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
             key_states = torch.cat([past_key_value[0], key_states], dim=2)
             value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
-            # self_attention
+            # self_attention (no compatible cache provided)
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
 
@@ -141,12 +143,11 @@ class Int8OPTAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
                 )
-            attn_weights = attn_weights.view(
-                bsz, self.num_heads, tgt_len, src_len) + attention_mask
-            attn_weights = torch.max(attn_weights, torch.tensor(
-                torch.finfo(attn_weights.dtype).min))
-            attn_weights = attn_weights.view(
-                bsz * self.num_heads, tgt_len, src_len)
+            # Ensure dtype/device alignment; support -inf or large negative masks
+            if attention_mask.dtype != attn_weights.dtype or attention_mask.device != attn_weights.device:
+                attention_mask = attention_mask.to(dtype=attn_weights.dtype, device=attn_weights.device)
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_probs = nn.functional.softmax(attn_weights, dim=-1)
 
@@ -249,6 +250,8 @@ class Int8OPTDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -288,6 +291,7 @@ class Int8OPTDecoderLayer(nn.Module):
 
         residual.add_(hidden_states.to(residual.dtype))
 
+        # match HF return convention: (hidden_states,) or (hidden_states, attn, present)
         outputs = (residual,)
 
         if output_attentions:
@@ -337,7 +341,8 @@ class Int8OPTDecoder(OPTPreTrainedModel):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList(
-            [Int8OPTDecoderLayer(config.hidden_size, config.num_attention_heads, config.ffn_dim) for _ in range(config.num_hidden_layers)])
+            [Int8OPTDecoderLayer(config.hidden_size, config.num_attention_heads, config.ffn_dim) for _ in range(config.num_hidden_layers)]
+        )
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -345,7 +350,8 @@ class Int8OPTDecoder(OPTPreTrainedModel):
 
     get_input_embeddings = OPTDecoder.get_input_embeddings
     set_input_embeddings = OPTDecoder.set_input_embeddings
-    _prepare_decoder_attention_mask = OPTDecoder._prepare_decoder_attention_mask
+    #_prepare_decoder_attention_mask = OPTDecoder._prepare_decoder_attention_mask
+    _update_causal_mask = OPTDecoder._update_causal_mask
     old_forward = OPTDecoder.forward
 
     @staticmethod
@@ -357,7 +363,8 @@ class Int8OPTDecoder(OPTPreTrainedModel):
         int8_module.final_layer_norm = module.final_layer_norm
         for i, layer in enumerate(module.layers):
             int8_module.layers[i] = Int8OPTDecoderLayer.from_float(
-                layer, **decoder_layer_scales[i])
+                layer, **decoder_layer_scales[i]
+            )
         return int8_module
 
     def forward(
@@ -393,8 +400,7 @@ class Int8OPTDecoder(OPTPreTrainedModel):
         )
         # slice the output to the original length
         if input_len % 16 != 0:
-            output.last_hidden_state = output.last_hidden_state[:,
-                                                                :input_len, :]
+            output.last_hidden_state = output.last_hidden_state[:, :input_len, :]
         return output
 
 
@@ -447,4 +453,4 @@ class Int8OPTForCausalLM(OPTPreTrainedModel):
     get_decoder = OPTForCausalLM.get_decoder
     forward = OPTForCausalLM.forward
     prepare_inputs_for_generation = OPTForCausalLM.prepare_inputs_for_generation
-    _reorder_cache = OPTForCausalLM._reorder_cache
+    #_reorder_cache = OPTForCausalLM._reorder_cache

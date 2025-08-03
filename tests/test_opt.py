@@ -46,7 +46,9 @@ def test_opt():
     dataset = load_dataset('lambada', split='validation[:1000]')
     tokenizer = GPT2Tokenizer.from_pretrained('facebook/opt-13b')
     evaluator = Evaluator(dataset, tokenizer, 'cuda')
-    int8_model_path = '/dataset/opt/opt-13b-smoothquant'
+    # Accept either a local path (set TORCH_INT_OPT_13B_INT8_PATH) or default to an HF repo id.
+    import os
+    int8_model_path = os.environ.get('TORCH_INT_OPT_13B_INT8_PATH', 'neuralmagic/opt-13b-int8')
     # precision = 'fp16'
     precision = 'int8'
     if precision == 'int8':

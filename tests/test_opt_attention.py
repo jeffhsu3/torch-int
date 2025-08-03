@@ -21,7 +21,15 @@ def test_opt_attention():
     B, L, D, H = 1, 16, 16, 1    
     x = torch.randn(B, L, D)
     x_scale = x.abs().max() / 127
-    attn = OPTAttention(D, H)
+    # Build a minimal OPTConfig instead of passing integers; OPTAttention expects a config object
+    # Set minimal fields required by OPTAttention and its forward path
+    config = OPTConfig(
+        hidden_size=D,
+        num_attention_heads=H,
+        _attn_implementation="eager",  # avoid Flash/SDPA dispatch
+        do_layer_norm_before=False,    # default-safe
+    )
+    attn = OPTAttention(config, layer_idx=0)
     attn.eval()
     act_dict = {}
     for name, module in attn.named_modules():

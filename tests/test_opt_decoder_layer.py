@@ -8,26 +8,41 @@ from functools import partial
 
 
 def store_act(module, x, y, act_dict, name):
-    if isinstance(x, tuple):
-        x = x[0]
-    if isinstance(y, tuple):
-        y = y[0]
-    act_dict[name] = (x, y)
+    # x and y from hooks are tuples/lists of inputs/outputs
+    x0 = x[0] if isinstance(x, (list, tuple)) and len(x) > 0 else x
+    y0 = y[0] if isinstance(y, (list, tuple)) and len(y) > 0 else y
+    # Only store valid tensor pairs
+    if isinstance(x0, torch.Tensor) and isinstance(y0, torch.Tensor) and name is not None:
+        act_dict[name] = (x0, y0)
 
 
 @torch.no_grad()
 def test_opt_decoder_layer():
     config = OPTConfig.from_pretrained('facebook/opt-125m')
+    # Ensure HF attention implementation is set; otherwise HF raises KeyError(None)
+    # "eager" is universally available. Set both public and private to handle HF versions.
+    setattr(config, "attn_implementation", getattr(config, "attn_implementation", None) or "eager")
+    setattr(config, "_attn_implementation", getattr(config, "_attn_implementation", None) or "eager")
     B, L, D, H = 1, 256, config.hidden_size, config.num_attention_heads
 
     x = torch.randn(B, L, D)
     layer = OPTDecoderLayer(config)
     layer.eval()
     act_dict = {}
+    # Only hook the exact linear modules we care about
+    target_names = {
+        'self_attn.q_proj',
+        'self_attn.k_proj',
+        'self_attn.v_proj',
+        'self_attn.out_proj',
+        'fc1',
+        'fc2',
+    }
     for name, module in layer.named_modules():
-        if isinstance(module, torch.nn.Linear):
+        if name in target_names and isinstance(module, torch.nn.Linear):
             module.register_forward_hook(
-                partial(store_act, act_dict=act_dict, name=name))
+                partial(store_act, act_dict=act_dict, name=name)
+            )
     y = layer(x)[0]
 
     attn_input_scale = act_dict['self_attn.q_proj'][0].abs().max() / 127
