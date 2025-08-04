@@ -143,10 +143,11 @@ class Int8OPTAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
                 )
-            # Ensure dtype/device alignment; support -inf or large negative masks
             if attention_mask.dtype != attn_weights.dtype or attention_mask.device != attn_weights.device:
                 attention_mask = attention_mask.to(dtype=attn_weights.dtype, device=attn_weights.device)
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+            attn_weights = torch.max(attn_weights, torch.tensor(
+                torch.finfo(attn_weights.dtype).min)) 
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_probs = nn.functional.softmax(attn_weights, dim=-1)
